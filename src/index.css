@@ -1,0 +1,63 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    /* LIGHT MODE */
+    --bg-one: #ffffff;
+    --main-bg: #f8fafc;
+    --surface: #ffffff;
+    --primary-text: #0f172a;
+    --secondary-text: #475569;
+    --tertiary-text: #94a3b8;
+    --accent-blue: #3b82f6;
+    --card-border: #e2e8f0;
+    --error: #ef4444;
+    --success: #10b981;
+    --warning: #f59e0b;
+  }
+
+  .dark {
+    /* DARK MODE (Matched to your exact image_39b1e3.png) */
+    --bg-one: #0b1120;
+    --main-bg: #0b1121;
+    --surface: #111827;
+    --primary-text: #f8fafc;
+    --secondary-text: #94a3b8;
+    --tertiary-text: #64748b;
+    --accent-blue: #3b82f6;
+    --card-border: #1e293b;
+    --error: #f87171;
+    --success: #10b981;
+    --warning: #fbbf24;
+  }
+}
+
+@theme {
+  --color-bgOne: var(--bg-one);
+  --color-mainBg: var(--main-bg);
+  --color-surface: var(--surface);
+  --color-primaryText: var(--primary-text);
+  --color-secondaryText: var(--secondary-text);
+  --color-tertiaryText: var(--tertiary-text);
+  --color-accentBlue: var(--accent-blue);
+  --color-cardBorder: var(--card-border);
+  --color-error: var(--error);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+}
+
+body {
+  background-color: var(--main-bg);
+  color: var(--primary-text);
+  transition: background-color 0.2s ease, color 0.2s ease;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Hide scrollbar for category links */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
