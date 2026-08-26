@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useNavigate, useLocation, Link } from "react-router-dom";
 import { supabase } from "../../lib/supabase";
 import {
@@ -25,7 +25,6 @@ import {
   Info,
   Home,
   Users,
-  CalendarDays,
   IndianRupee,
   Loader2,
   ChevronRight,
@@ -33,13 +32,16 @@ import {
   Map,
   Edit3,
   ArrowLeft,
-  ImageIcon,
   Armchair,
   Building2,
   Maximize2,
   ShieldAlert,
   Zap,
   User,
+  MessageSquare,
+  Lock,
+  Unlock,
+  Send,
 } from "lucide-react";
 import PhoneVerificationModal from "../../components/auth/PhoneVerificationModal";
 
@@ -66,35 +68,62 @@ const formatCurrency = (val) =>
     currency: "INR",
     maximumFractionDigits: 0,
   }).format(val);
-
-const formatRent = (min, max) =>
-  min === max
-    ? formatCurrency(min)
-    : `${formatCurrency(min)} - ${formatCurrency(max)}`;
-
-const formatDeposit = (dep) => {
-  if (!dep || dep === "0") return "No Deposit";
-  return isNaN(Number(dep)) ? dep : formatCurrency(dep);
-};
-
-const formatPropertyType = (type) => {
-  if (type === "pg") return "PG";
-  if (type === "flat") return "Flat";
-  if (type === "flatmate_spot") return "Flatmate Spot";
-  return type;
-};
-
-const formatOccupantType = (type) => {
-  if (type === "both" || type === "students_and_professionals") {
-    return "Students & Professionals";
-  }
-  return type.replace(/_/g, " ");
-};
+const formatDeposit = (dep) =>
+  !dep || dep === "0"
+    ? "No Deposit"
+    : isNaN(Number(dep))
+    ? dep
+    : formatCurrency(dep);
+const formatPropertyType = (type) =>
+  type === "pg"
+    ? "PG"
+    : type === "flat"
+    ? "Flat"
+    : type === "flatmate_spot"
+    ? "Flatmate Spot"
+    : type;
+const formatOccupantType = (type) =>
+  type === "both" || type === "students_and_professionals"
+    ? "Students & Professionals"
+    : type.replace(/_/g, " ");
 
 const getGenderColor = (pref) => {
   if (pref === "male_only") return "bg-blue-50 text-blue-600 border-blue-200";
   if (pref === "female_only") return "bg-pink-50 text-pink-600 border-pink-200";
   return "bg-purple-50 text-purple-600 border-purple-200";
+};
+
+// --- VERTICAL TICKET BADGE RENDERER ---
+const renderVerticalBadges = (badges) => {
+  if (!badges || !Array.isArray(badges) || badges.length === 0) return null;
+  return (
+    <div className="absolute bottom-4 left-4 bg-white/20 dark:bg-black/20 backdrop-blur-md border border-white/40 dark:border-white/10 p-1.5 rounded-full flex flex-col gap-2 z-20 shadow-[0_8px_16px_rgba(0,0,0,0.2)] pointer-events-none">
+      {badges.includes("black") && (
+        <div
+          className="w-8 h-8 bg-black/90 rounded-full flex items-center justify-center shadow-sm"
+          title="Premium Property"
+        >
+          <Star size={14} className="text-yellow-500 fill-yellow-500" />
+        </div>
+      )}
+      {badges.includes("green") && (
+        <div
+          className="w-8 h-8 bg-emerald-500/95 rounded-full flex items-center justify-center shadow-sm"
+          title="Prime Location"
+        >
+          <MapPin size={14} className="text-white" />
+        </div>
+      )}
+      {badges.includes("blue") && (
+        <div
+          className="w-8 h-8 bg-blue-500/95 rounded-full flex items-center justify-center shadow-sm"
+          title="Value Pick"
+        >
+          <ShieldCheck size={14} className="text-white" />
+        </div>
+      )}
+    </div>
+  );
 };
 
 const getAmenityIcon = (key) => {
@@ -158,8 +187,19 @@ export default function PublicAccommodationView() {
   const [reviews, setReviews] = useState([]);
   const [linkedFlatmates, setLinkedFlatmates] = useState([]);
 
-  const [isViewerOpen, setIsViewerOpen] = useState(false);
-  const [viewerIndex, setViewerIndex] = useState(0);
+  // --- DOUBLE-BLIND FLATMATE CONNECTION STATES ---
+  const [connectionRequest, setConnectionRequest] = useState(null);
+  const [isProfileCompleteModalOpen, setIsProfileCompleteModalOpen] =
+    useState(false);
+  const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
+  const [introMessage, setIntroMessage] = useState("");
+
+  // Gallery & Swipe States
+  const [activePhotoIndex, setActivePhotoIndex] = useState(0);
+  const [isFullScreenViewerOpen, setIsFullScreenViewerOpen] = useState(false);
+  const [touchStart, setTouchStart] = useState(null);
+  const [touchEnd, setTouchEnd] = useState(null);
+
   const [isReviewOpen, setIsReviewOpen] = useState(false);
   const [reviewForm, setReviewForm] = useState({
     cleanliness: 5,
@@ -174,10 +214,8 @@ export default function PublicAccommodationView() {
   const [isConnecting, setIsConnecting] = useState(false);
   const [isSubmittingReview, setIsSubmittingReview] = useState(false);
   const [toast, setToast] = useState(null);
-
   const [isFavorite, setIsFavorite] = useState(false);
   const [animatingHeart, setAnimatingHeart] = useState(false);
-
   const [isPhoneModalOpen, setIsPhoneModalOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState(null);
 
@@ -186,19 +224,16 @@ export default function PublicAccommodationView() {
     setTimeout(() => setToast(null), 3500);
   };
 
-  // --- TELEMETRY LOGGING ---
   const logActivity = async (activityType) => {
     try {
       const {
         data: { session },
       } = await supabase.auth.getSession();
-
       let sessionId = sessionStorage.getItem("bb_session_id");
       if (!sessionId) {
         sessionId = `anon_${Math.random().toString(36).substr(2, 9)}`;
         sessionStorage.setItem("bb_session_id", sessionId);
       }
-
       await supabase.from("user_activity_logs").insert({
         user_id: session?.user?.id || null,
         session_id: sessionId,
@@ -206,9 +241,7 @@ export default function PublicAccommodationView() {
         target_entity: "pg_flat_listings",
         target_entity_id: id,
       });
-    } catch (err) {
-      console.error("Telemetry error:", err);
-    }
+    } catch (err) {}
   };
 
   useEffect(() => {
@@ -217,14 +250,7 @@ export default function PublicAccommodationView() {
       const { data, error } = await supabase
         .from("pg_flat_listings")
         .select(
-          `
-          *, 
-          listing_media(*), 
-          listing_amenities(*), 
-          listing_landmarks_proximity(*), 
-          listing_highlight_tags(highlight_tags(*)), 
-          property_reviews(*, user:users(full_name, avatar_url))
-        `
+          `*, listing_media(*), listing_amenities(*), listing_landmarks_proximity(*), listing_highlight_tags(highlight_tags(*)), property_reviews(*, user:users(full_name, avatar_url))`
         )
         .eq("id", id)
         .eq("status", "active")
@@ -238,22 +264,18 @@ export default function PublicAccommodationView() {
         );
         setMedia(sortedMedia);
         setLandmarks(data.listing_landmarks_proximity || []);
-
-        if (data.listing_highlight_tags) {
+        if (data.listing_highlight_tags)
           setTags(
             data.listing_highlight_tags
               .map((t) => t.highlight_tags)
               .filter(Boolean)
           );
-        }
-
-        if (data.property_reviews) {
+        if (data.property_reviews)
           setReviews(
             data.property_reviews
               .filter((r) => r.status === "published")
               .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
           );
-        }
 
         let parsedAmenities = [];
         const amData = Array.isArray(data.listing_amenities)
@@ -281,7 +303,6 @@ export default function PublicAccommodationView() {
           setAmenities(parsedAmenities);
         }
 
-        // Fetch linked flatmates if it's a flatmate spot
         if (data.listing_type === "flatmate_spot") {
           const { data: linkedData } = await supabase
             .from("listing_linked_flatmates")
@@ -291,11 +312,10 @@ export default function PublicAccommodationView() {
             setLinkedFlatmates(linkedData.map((l) => l.users).filter(Boolean));
         }
 
-        // Increment Views & Log Activity
         await supabase.rpc("increment_listing_views", { row_id: data.id });
         logActivity("property_viewed");
 
-        // Check favorite status
+        // Auth Checks for favorites & double-blind requests
         const {
           data: { session },
         } = await supabase.auth.getSession();
@@ -307,6 +327,16 @@ export default function PublicAccommodationView() {
             .eq("listing_id", data.id)
             .maybeSingle();
           if (favData) setIsFavorite(true);
+
+          if (data.listing_type === "flatmate_spot") {
+            const { data: reqData } = await supabase
+              .from("flatmate_requests")
+              .select("*")
+              .eq("requester_id", session.user.id)
+              .eq("listing_id", id)
+              .maybeSingle();
+            if (reqData) setConnectionRequest(reqData);
+          }
         }
       }
       setLoading(false);
@@ -325,16 +355,13 @@ export default function PublicAccommodationView() {
       setTimeout(() => navigate("/login"), 1500);
       return;
     }
-
     const { data: profile } = await supabase
       .from("users")
       .select("is_phone_verified")
       .eq("id", session.user.id)
       .single();
-    const isVerified = profile?.is_phone_verified || !!session.user.phone;
-
-    if (!isVerified) {
-      setPendingAction(() => actionCallback);
+    if (!(profile?.is_phone_verified || !!session.user.phone)) {
+      setPendingAction(() => () => actionCallback(session.user));
       setIsPhoneModalOpen(true);
       return;
     }
@@ -346,20 +373,8 @@ export default function PublicAccommodationView() {
     const title = listing?.title || "BachelorBase Property";
     const fallbackCopy = async () => {
       try {
-        if (navigator.clipboard && window.isSecureContext) {
-          await navigator.clipboard.writeText(url);
-          showToast("Link copied to clipboard!");
-        } else {
-          const textArea = document.createElement("textarea");
-          textArea.value = url;
-          textArea.style.position = "fixed";
-          document.body.appendChild(textArea);
-          textArea.focus();
-          textArea.select();
-          document.execCommand("copy");
-          textArea.remove();
-          showToast("Link copied to clipboard!");
-        }
+        await navigator.clipboard.writeText(url);
+        showToast("Link copied to clipboard!");
       } catch (err) {
         showToast("Failed to copy link.", "error");
       }
@@ -377,31 +392,77 @@ export default function PublicAccommodationView() {
     requireVerifiedPhone(async (user) => {
       setAnimatingHeart(true);
       setTimeout(() => setAnimatingHeart(false), 300);
-
       if (isFavorite) {
         setIsFavorite(false);
-        const { error } = await supabase
+        await supabase
           .from("saved_favorites")
           .delete()
           .match({ user_id: user.id, listing_id: listing.id });
-        if (error) showToast("Failed to remove.", "error");
-        else showToast("Removed from favorites", "success");
+        showToast("Removed from favorites", "success");
       } else {
         setIsFavorite(true);
-        const { error } = await supabase
+        await supabase
           .from("saved_favorites")
           .insert({ user_id: user.id, listing_id: listing.id });
-        if (error && error.code !== "23505")
-          showToast("Failed to save.", "error");
-        else
-          showToast("Added to favorites!", "success", {
-            label: "View",
-            url: "/favorites",
-          });
+        showToast("Added to favorites!", "success", {
+          label: "View",
+          url: "/favorites",
+        });
       }
     });
   };
 
+  // --- DOUBLE BLIND CONNECTION HANDLERS ---
+  const handleDoubleBlindClick = () => {
+    requireVerifiedPhone(async (user) => {
+      if (linkedFlatmates.length === 0) {
+        showToast(
+          "No user is currently linked to this listing to receive requests.",
+          "error"
+        );
+        return;
+      }
+      const { data: profile } = await supabase
+        .from("flatmate_profiles")
+        .select("id")
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (!profile) {
+        setIsProfileCompleteModalOpen(true);
+      } else {
+        setIsConnectModalOpen(true);
+      }
+    });
+  };
+
+  const submitConnectionRequest = async () => {
+    setIsConnecting(true);
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      const targetUserId = linkedFlatmates[0].id; // Target the primary linked flatmate
+
+      const { error } = await supabase.from("flatmate_requests").insert({
+        requester_id: session.user.id,
+        listing_id: listing.id,
+        target_user_id: targetUserId,
+        intro_message: introMessage,
+      });
+
+      if (error) throw error;
+
+      showToast("Connection request sent successfully!", "success");
+      setConnectionRequest({ status: "pending" });
+      setIsConnectModalOpen(false);
+    } catch (err) {
+      showToast("Failed to send request.", "error");
+    } finally {
+      setIsConnecting(false);
+    }
+  };
+
+  // Standard WhatsApp Connection
   const handleConnectClick = async () => {
     requireVerifiedPhone(async (user) => {
       setIsConnecting(true);
@@ -422,7 +483,6 @@ export default function PublicAccommodationView() {
           user_phone: userPhone,
           prefilled_message: message,
         });
-
         await supabase.rpc("increment_whatsapp_clicks", { row_id: listing.id });
         logActivity("whatsapp_connect_clicked");
 
@@ -485,6 +545,22 @@ export default function PublicAccommodationView() {
     });
   };
 
+  // --- SWIPE GESTURE LOGIC ---
+  const minSwipeDistance = 50;
+  const onTouchStart = (e) => {
+    setTouchEnd(null);
+    setTouchStart(e.targetTouches[0].clientX);
+  };
+  const onTouchMove = (e) => setTouchEnd(e.targetTouches[0].clientX);
+  const onTouchEndHandler = () => {
+    if (!touchStart || !touchEnd) return;
+    const distance = touchStart - touchEnd;
+    if (distance > minSwipeDistance)
+      setActivePhotoIndex((prev) => (prev === media.length - 1 ? 0 : prev + 1));
+    if (distance < -minSwipeDistance)
+      setActivePhotoIndex((prev) => (prev === 0 ? media.length - 1 : prev - 1));
+  };
+
   if (loading)
     return (
       <div className="min-h-screen bg-mainBg flex items-center justify-center">
@@ -509,11 +585,21 @@ export default function PublicAccommodationView() {
   const isPg = listing.listing_type === "pg";
   const isFlat = listing.listing_type === "flat";
   const isFlatmate = listing.listing_type === "flatmate_spot";
-
-  // Extract raw amenity flags for Rules section
   const rawAmenities = Array.isArray(listing.listing_amenities)
     ? listing.listing_amenities[0]
     : listing.listing_amenities;
+  const getImageUrl = (url) =>
+    url.startsWith("http") ? url : `${API_BASE}${url}`;
+
+  // State calculations for privacy
+  const isDoubleBlindLocked =
+    isFlatmate && connectionRequest?.status !== "accepted";
+  const displayPhone = isDoubleBlindLocked
+    ? "+91 ••••• •••••"
+    : listing.owner_phone;
+  const displayWa = isDoubleBlindLocked
+    ? "+91 ••••• •••••"
+    : listing.owner_whatsapp || listing.owner_phone;
 
   return (
     <div className="w-full min-h-screen bg-mainBg font-sans pb-24 lg:pb-12 animate-in fade-in relative">
@@ -538,83 +624,138 @@ export default function PublicAccommodationView() {
           <span className="text-sm font-black tracking-wide truncate">
             {toast.msg}
           </span>
-          {toast.action && (
-            <Link
-              to={toast.action.url}
-              className="ml-2 text-xs font-black underline shrink-0 hover:opacity-80"
-            >
-              {toast.action.label}
-            </Link>
-          )}
         </div>
       )}
 
-      {/* Image Lightbox */}
-      {isViewerOpen && media.length > 0 && (
-        <div className="fixed inset-0 z-[999] bg-black/95 backdrop-blur-md flex flex-col animate-in fade-in">
-          <div className="flex items-center justify-between p-4 sm:p-6 shrink-0">
-            <span className="text-white font-bold text-sm bg-white/10 px-4 py-1.5 rounded-full">
-              {viewerIndex + 1} / {media.length}
+      {/* --- PRIVACY MODALS --- */}
+      {isProfileCompleteModalOpen && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in">
+          <div className="bg-surface border border-cardBorder rounded-3xl p-6 shadow-2xl w-full max-w-sm text-center animate-in zoom-in-95">
+            <div className="w-16 h-16 bg-red-50 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4 border border-red-100">
+              <User size={32} />
+            </div>
+            <h3 className="text-xl font-black text-primaryText mb-2">
+              Profile Required
+            </h3>
+            <p className="text-sm font-medium text-secondaryText mb-6">
+              To ensure safety and compatibility, you must complete your
+              Flatmate Profile before sending connection requests.
+            </p>
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={() => navigate("/profile")}
+                className="w-full bg-[#5B4EE4] hover:bg-[#4b40ce] text-white py-3.5 rounded-xl font-black transition-all shadow-md"
+              >
+                Create Flatmate Profile
+              </button>
+              <button
+                onClick={() => setIsProfileCompleteModalOpen(false)}
+                className="w-full py-3.5 text-secondaryText font-bold hover:text-primaryText transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isConnectModalOpen && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in">
+          <div className="bg-surface border border-cardBorder rounded-3xl p-6 shadow-2xl w-full max-w-sm animate-in zoom-in-95">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-black text-primaryText flex items-center gap-2">
+                <ShieldCheck size={20} className="text-[#5B4EE4]" /> Request
+                Connection
+              </h3>
+              <button
+                onClick={() => setIsConnectModalOpen(false)}
+                className="text-tertiaryText hover:text-red-500 transition-colors"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <p className="text-xs font-medium text-secondaryText mb-4 leading-relaxed">
+              Introduce yourself briefly. If the flatmates find your profile
+              compatible, you'll instantly unlock their contact details!
+            </p>
+            <textarea
+              rows="3"
+              placeholder="Hi, I'm looking for a flatmate and your place looks great. I am a clean and quiet student..."
+              value={introMessage}
+              onChange={(e) => setIntroMessage(e.target.value)}
+              className="w-full bg-mainBg border border-cardBorder rounded-xl p-4 text-sm font-medium outline-none focus:border-[#5B4EE4] resize-none mb-4"
+            />
+            <button
+              onClick={submitConnectionRequest}
+              disabled={isConnecting || !introMessage.trim()}
+              className="w-full bg-[#5B4EE4] hover:bg-[#4b40ce] text-white py-3.5 rounded-xl font-black transition-all shadow-md disabled:opacity-50 flex justify-center items-center gap-2"
+            >
+              {isConnecting ? (
+                <Loader2 size={18} className="animate-spin" />
+              ) : (
+                <Send size={18} />
+              )}{" "}
+              Send Request
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* FULL SCREEN LIGHTBOX VIEWER */}
+      {isFullScreenViewerOpen && media.length > 0 && (
+        <div className="fixed inset-0 z-[999] bg-black/98 backdrop-blur-xl flex flex-col animate-in fade-in zoom-in-95 duration-200">
+          <div className="flex items-center justify-between p-4 sm:p-6 shrink-0 absolute top-0 w-full z-50 pointer-events-none">
+            <span className="text-white font-bold text-sm bg-white/10 px-4 py-1.5 rounded-full border border-white/20 pointer-events-auto">
+              {activePhotoIndex + 1} / {media.length}
             </span>
             <button
-              onClick={() => setIsViewerOpen(false)}
-              className="bg-white/10 p-2 rounded-full text-white hover:bg-white/20 transition-colors"
+              onClick={() => setIsFullScreenViewerOpen(false)}
+              className="bg-white/10 border border-white/20 p-2 rounded-full text-white hover:bg-white/20 transition-colors pointer-events-auto"
             >
               <X size={24} />
             </button>
           </div>
-          <div className="flex-1 flex items-center justify-center relative px-4 sm:px-16 min-h-0">
+          <div
+            className="flex-1 flex items-center justify-center relative px-0 sm:px-16 min-h-0 w-full h-full"
+            onTouchStart={onTouchStart}
+            onTouchMove={onTouchMove}
+            onTouchEnd={onTouchEndHandler}
+          >
             <button
-              onClick={() =>
-                setViewerIndex((prev) =>
+              onClick={(e) => {
+                e.stopPropagation();
+                setActivePhotoIndex((prev) =>
                   prev === 0 ? media.length - 1 : prev - 1
-                )
-              }
-              className="absolute left-4 sm:left-6 p-3 bg-white/10 hover:bg-white/20 text-white rounded-full transition-colors z-10"
+                );
+              }}
+              className="absolute left-4 sm:left-8 p-3 bg-white/10 border border-white/20 hover:bg-white/20 text-white rounded-full transition-colors z-10 hidden sm:block"
             >
               <ChevronLeft size={28} />
             </button>
             <img
-              src={
-                media[viewerIndex].url.startsWith("http")
-                  ? media[viewerIndex].url
-                  : `${API_BASE}${media[viewerIndex].url}`
-              }
-              className="w-full h-full object-contain"
+              src={getImageUrl(media[activePhotoIndex].url)}
+              draggable="false"
+              className="w-full h-full object-contain select-none pointer-events-none"
               alt="Gallery View"
             />
             <button
-              onClick={() =>
-                setViewerIndex((prev) =>
+              onClick={(e) => {
+                e.stopPropagation();
+                setActivePhotoIndex((prev) =>
                   prev === media.length - 1 ? 0 : prev + 1
-                )
-              }
-              className="absolute right-4 sm:right-6 p-3 bg-white/10 hover:bg-white/20 text-white rounded-full transition-colors z-10"
+                );
+              }}
+              className="absolute right-4 sm:right-8 p-3 bg-white/10 border border-white/20 hover:bg-white/20 text-white rounded-full transition-colors z-10 hidden sm:block"
             >
               <ChevronRight size={28} />
             </button>
-          </div>
-          <div className="p-4 sm:p-6 flex justify-center gap-2 overflow-x-auto no-scrollbar shrink-0">
-            {media.map((m, i) => (
-              <img
-                key={i}
-                onClick={() => setViewerIndex(i)}
-                src={m.url.startsWith("http") ? m.url : `${API_BASE}${m.url}`}
-                className={`w-16 h-16 object-cover rounded-lg cursor-pointer border-2 transition-all shrink-0 ${
-                  viewerIndex === i
-                    ? "border-white opacity-100"
-                    : "border-transparent opacity-40 hover:opacity-100"
-                }`}
-                alt="Thumb"
-              />
-            ))}
           </div>
         </div>
       )}
 
       {/* Review Modal */}
       {isReviewOpen && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in">
           <div className="bg-surface border border-cardBorder rounded-2xl p-5 sm:p-6 shadow-2xl w-full max-w-md animate-in zoom-in-95 flex flex-col gap-5">
             <div className="flex justify-between items-center border-b border-cardBorder pb-3">
               <h3 className="text-lg font-black text-primaryText">
@@ -761,7 +902,7 @@ export default function PublicAccommodationView() {
                 }`}
                 fill={isFavorite ? "#FF2E51" : "transparent"}
                 color={isFavorite ? "#FF2E51" : "currentColor"}
-              />
+              />{" "}
               {isFavorite ? "Saved" : "Save"}
             </button>
           </div>
@@ -771,7 +912,7 @@ export default function PublicAccommodationView() {
         <div className="flex flex-col lg:grid lg:grid-cols-12 gap-8 lg:gap-10">
           {/* LEFT COLUMN: Content */}
           <div className="lg:col-span-8 flex flex-col gap-6 sm:gap-8">
-            {/* Header Information */}
+            {/* 1. Header Information */}
             <div className="flex flex-col gap-3">
               <div className="flex flex-wrap items-center gap-2 mb-1">
                 <span
@@ -806,32 +947,78 @@ export default function PublicAccommodationView() {
               </div>
             </div>
 
-            {/* Image Gallery */}
+            {/* 2. INLINE DYNAMIC PHOTO GALLERY */}
             {media.length > 0 ? (
-              <div
-                className="flex flex-col gap-2 group cursor-pointer"
-                onClick={() => {
-                  setViewerIndex(0);
-                  setIsViewerOpen(true);
-                }}
-              >
-                <div className="w-full aspect-[4/3] sm:aspect-[16/9] rounded-2xl bg-zinc-900 border border-cardBorder overflow-hidden relative shadow-sm">
+              <div className="flex flex-col gap-3 w-full">
+                <div
+                  className="w-full aspect-[4/3] sm:aspect-[16/9] rounded-2xl bg-zinc-100 dark:bg-zinc-900 border border-cardBorder overflow-hidden relative shadow-sm group"
+                  onTouchStart={onTouchStart}
+                  onTouchMove={onTouchMove}
+                  onTouchEnd={onTouchEndHandler}
+                >
                   <img
-                    src={
-                      media[0].url.startsWith("http")
-                        ? media[0].url
-                        : `${API_BASE}${media[0].url}`
-                    }
+                    src={getImageUrl(media[activePhotoIndex].url)}
                     alt="Property"
-                    className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-700"
+                    draggable="false"
+                    className="w-full h-full object-contain pointer-events-none select-none transition-transform duration-500"
                   />
-                  <div className="absolute inset-0 bg-black/10 group-hover:bg-black/20 transition-colors"></div>
+                  {listing.badges?.length > 0 &&
+                    renderVerticalBadges(listing.badges)}
                   {media.length > 1 && (
-                    <div className="absolute bottom-4 right-4 bg-white/90 backdrop-blur-md text-zinc-900 font-bold px-4 py-2 rounded-xl shadow-lg text-xs flex items-center gap-2">
-                      <ImageIcon size={14} /> Show all {media.length} photos
-                    </div>
+                    <>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActivePhotoIndex((prev) =>
+                            prev === 0 ? media.length - 1 : prev - 1
+                          );
+                        }}
+                        className="absolute left-4 top-1/2 -translate-y-1/2 p-2 bg-white/20 backdrop-blur-md text-white border border-white/20 rounded-full opacity-0 group-hover:opacity-100 transition-opacity hover:bg-white/40 shadow-sm hidden sm:block z-10"
+                      >
+                        <ChevronLeft size={24} />
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActivePhotoIndex((prev) =>
+                            prev === media.length - 1 ? 0 : prev + 1
+                          );
+                        }}
+                        className="absolute right-4 top-1/2 -translate-y-1/2 p-2 bg-white/20 backdrop-blur-md text-white border border-white/20 rounded-full opacity-0 group-hover:opacity-100 transition-opacity hover:bg-white/40 shadow-sm hidden sm:block z-10"
+                      >
+                        <ChevronRight size={24} />
+                      </button>
+                    </>
                   )}
+                  <button
+                    onClick={() => setIsFullScreenViewerOpen(true)}
+                    className="absolute bottom-4 right-4 p-2.5 bg-black/60 backdrop-blur-md hover:bg-black/80 text-white rounded-xl transition-colors shadow-lg border border-white/20 group-hover:scale-105 z-10"
+                  >
+                    <Maximize2 size={18} />
+                  </button>
                 </div>
+                {media.length > 1 && (
+                  <div className="flex gap-2 overflow-x-auto no-scrollbar py-1">
+                    {media.map((m, i) => (
+                      <button
+                        key={i}
+                        onClick={() => setActivePhotoIndex(i)}
+                        className={`relative w-20 h-16 sm:w-24 sm:h-20 rounded-xl overflow-hidden shrink-0 border-2 transition-all ${
+                          activePhotoIndex === i
+                            ? "border-[#5B4EE4] shadow-md"
+                            : "border-transparent opacity-60 hover:opacity-100"
+                        }`}
+                      >
+                        <img
+                          src={getImageUrl(m.url)}
+                          alt={`Thumb ${i + 1}`}
+                          draggable="false"
+                          className="w-full h-full object-cover"
+                        />
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             ) : (
               <div className="w-full aspect-[16/9] rounded-2xl bg-surface border border-cardBorder flex items-center justify-center text-tertiaryText shadow-sm">
@@ -841,9 +1028,9 @@ export default function PublicAccommodationView() {
 
             <hr className="border-cardBorder" />
 
-            {/* DYNAMIC QUICK STATS GRID */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
-              <div className="bg-surface border border-cardBorder rounded-2xl p-4 flex flex-col gap-1 shadow-sm hover:border-[#5B4EE4]/30 transition-colors">
+            {/* 3. DYNAMIC QUICK STATS GRID */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4">
+              <div className="bg-surface border border-cardBorder rounded-2xl p-4 flex flex-col gap-1 shadow-sm">
                 <Building2 size={16} className="text-[#5B4EE4] mb-1" />
                 <span className="text-[10px] font-extrabold text-secondaryText uppercase tracking-widest">
                   Type
@@ -852,9 +1039,8 @@ export default function PublicAccommodationView() {
                   {formatPropertyType(listing.listing_type)}
                 </span>
               </div>
-
               {(isFlat || isFlatmate) && listing.bhk_type && (
-                <div className="bg-surface border border-cardBorder rounded-2xl p-4 flex flex-col gap-1 shadow-sm hover:border-[#5B4EE4]/30 transition-colors">
+                <div className="bg-surface border border-cardBorder rounded-2xl p-4 flex flex-col gap-1 shadow-sm">
                   <Home size={16} className="text-[#5B4EE4] mb-1" />
                   <span className="text-[10px] font-extrabold text-secondaryText uppercase tracking-widest">
                     Config
@@ -864,9 +1050,8 @@ export default function PublicAccommodationView() {
                   </span>
                 </div>
               )}
-
               {(isFlat || isFlatmate) && listing.furnishing_status && (
-                <div className="bg-surface border border-cardBorder rounded-2xl p-4 flex flex-col gap-1 shadow-sm hover:border-[#5B4EE4]/30 transition-colors">
+                <div className="bg-surface border border-cardBorder rounded-2xl p-4 flex flex-col gap-1 shadow-sm">
                   <Armchair size={16} className="text-[#5B4EE4] mb-1" />
                   <span className="text-[10px] font-extrabold text-secondaryText uppercase tracking-widest">
                     Furnishing
@@ -876,10 +1061,9 @@ export default function PublicAccommodationView() {
                   </span>
                 </div>
               )}
-
               {isPg && (
                 <>
-                  <div className="bg-surface border border-cardBorder rounded-2xl p-4 flex flex-col gap-1 shadow-sm hover:border-[#5B4EE4]/30 transition-colors col-span-2 sm:col-span-1">
+                  <div className="bg-surface border border-cardBorder rounded-2xl p-4 flex flex-col gap-1 shadow-sm">
                     <Users size={16} className="text-[#5B4EE4] mb-1" />
                     <span className="text-[10px] font-extrabold text-secondaryText uppercase tracking-widest">
                       Occupant
@@ -889,22 +1073,20 @@ export default function PublicAccommodationView() {
                     </span>
                   </div>
                   {listing.hall_capacity > 0 && (
-                    <div className="bg-surface border border-cardBorder rounded-2xl p-4 flex flex-col gap-1 shadow-sm hover:border-[#5B4EE4]/30 transition-colors col-span-2 sm:col-span-2">
+                    <div className="bg-surface border border-cardBorder rounded-2xl p-4 flex flex-col gap-1 shadow-sm">
                       <Home size={16} className="text-[#5B4EE4] mb-1" />
                       <span className="text-[10px] font-extrabold text-secondaryText uppercase tracking-widest">
                         Hall Config
                       </span>
-                      <span className="text-sm font-black text-primaryText leading-snug">
-                        General Hall with a capacity of {listing.hall_capacity}{" "}
-                        available
+                      <span className="text-sm font-black text-primaryText leading-tight">
+                        {listing.hall_capacity} People
                       </span>
                     </div>
                   )}
                 </>
               )}
-
               {isFlat && listing.carpet_area_sqft && (
-                <div className="bg-surface border border-cardBorder rounded-2xl p-4 flex flex-col gap-1 shadow-sm hover:border-[#5B4EE4]/30 transition-colors">
+                <div className="bg-surface border border-cardBorder rounded-2xl p-4 flex flex-col gap-1 shadow-sm">
                   <Maximize2 size={16} className="text-[#5B4EE4] mb-1" />
                   <span className="text-[10px] font-extrabold text-secondaryText uppercase tracking-widest">
                     Area
@@ -914,9 +1096,8 @@ export default function PublicAccommodationView() {
                   </span>
                 </div>
               )}
-
               {isFlatmate && (
-                <div className="bg-surface border border-cardBorder rounded-2xl p-4 flex flex-col gap-1 shadow-sm hover:border-[#5B4EE4]/30 transition-colors">
+                <div className="bg-surface border border-cardBorder rounded-2xl p-4 flex flex-col gap-1 shadow-sm">
                   <Users size={16} className="text-[#5B4EE4] mb-1" />
                   <span className="text-[10px] font-extrabold text-secondaryText uppercase tracking-widest">
                     Currently Living
@@ -930,25 +1111,105 @@ export default function PublicAccommodationView() {
 
             <hr className="border-cardBorder" />
 
-            {/* Description */}
-            <div className="flex flex-col gap-3">
+            {/* 4. Amenities Matrix */}
+            <div className="flex flex-col gap-4 mt-2">
               <h2 className="text-lg font-black text-primaryText">
-                About this property
+                What this place offers
               </h2>
-              <p className="text-sm font-medium text-secondaryText leading-relaxed whitespace-pre-wrap">
-                {listing.description}
-              </p>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-y-5 gap-x-4">
+                {amenities.length > 0 ? (
+                  amenities.map((am, idx) => (
+                    <div
+                      key={idx}
+                      className="flex items-start gap-3 text-sm font-bold text-primaryText"
+                    >
+                      <div className="p-2 bg-surface border border-cardBorder rounded-lg text-secondaryText shadow-sm shrink-0">
+                        {getAmenityIcon(am.iconKey)}
+                      </div>
+                      <span className="leading-snug mt-1.5">{am.name}</span>
+                    </div>
+                  ))
+                ) : (
+                  <span className="text-sm text-secondaryText italic col-span-3">
+                    No amenities listed by owner.
+                  </span>
+                )}
+              </div>
             </div>
 
             <hr className="border-cardBorder" />
 
-            {/* ==================================================== */}
-            {/* MOBILE PRICING & TERMS (Visible only on lg:hidden)   */}
-            {/* ==================================================== */}
-            <div className="lg:hidden bg-surface p-5 sm:p-6 rounded-2xl border border-cardBorder shadow-sm mb-2">
-              <h2 className="text-lg font-black text-primaryText mb-4">
-                Pricing & Terms
-              </h2>
+            {/* 5. Highlights & Landmarks */}
+            {(tags.length > 0 || landmarks.length > 0) && (
+              <div className="flex flex-col gap-6">
+                {tags.length > 0 && (
+                  <div className="flex flex-col gap-3">
+                    <h2 className="text-lg font-black text-primaryText">
+                      Property Highlights
+                    </h2>
+                    <div className="flex flex-wrap gap-2">
+                      {tags.map((tag, i) => (
+                        <span
+                          key={i}
+                          className="bg-[#5B4EE4]/10 text-[#5B4EE4] border border-[#5B4EE4]/20 px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-wider shadow-sm"
+                        >
+                          {tag.tag_name}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {landmarks.length > 0 && (
+                  <div className="flex flex-col gap-4 mt-2">
+                    <h2 className="text-lg font-black text-primaryText">
+                      Proximity & Landmarks
+                    </h2>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      {landmarks.map((lm) => (
+                        <div
+                          key={lm.id}
+                          className="flex items-center gap-4 bg-surface border border-cardBorder p-4 rounded-2xl shadow-sm hover:border-[#5B4EE4]/30 transition-colors"
+                        >
+                          <div className="w-10 h-10 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-100 flex items-center justify-center shrink-0">
+                            <Map size={18} />
+                          </div>
+                          <div className="flex flex-col min-w-0">
+                            <span className="text-sm font-black text-primaryText truncate">
+                              {lm.landmark_name}
+                            </span>
+                            <span className="text-xs font-bold text-secondaryText mt-0.5">
+                              {lm.walking_time_mins} mins walk •{" "}
+                              {lm.distance_meters}m
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <hr className="border-cardBorder mt-2" />
+              </div>
+            )}
+
+            {/* 6. MOBILE PRICING & TERMS */}
+            <div className="lg:hidden bg-surface p-6 rounded-3xl border border-cardBorder shadow-md mb-2 flex flex-col gap-6">
+              <div className="flex flex-col">
+                <span className="text-[10px] font-extrabold text-secondaryText uppercase tracking-widest mb-1">
+                  {isPg ? "Rent Starts From" : "Monthly Rent"}
+                </span>
+                <div className="flex items-end gap-1 flex-wrap">
+                  <span className="text-2xl font-black text-primaryText leading-none">
+                    {formatCurrency(listing.price_monthly_min)}
+                  </span>
+                  {listing.price_monthly_max > listing.price_monthly_min && (
+                    <span className="text-lg font-bold text-secondaryText mb-[2px]">
+                      {" "}
+                      - {formatCurrency(listing.price_monthly_max)}
+                    </span>
+                  )}
+                </div>
+              </div>
+
               <div className="flex flex-col gap-3">
                 <div className="flex justify-between items-center text-sm font-bold">
                   <span className="text-secondaryText">Security Deposit</span>
@@ -980,11 +1241,49 @@ export default function PublicAccommodationView() {
                   </div>
                 )}
               </div>
-            </div>
 
+              {/* PRIVACY SHIELD MOBILE BUTTONS */}
+              {isDoubleBlindLocked ? (
+                <button
+                  onClick={
+                    connectionRequest?.status === "pending"
+                      ? null
+                      : handleDoubleBlindClick
+                  }
+                  disabled={connectionRequest?.status === "pending"}
+                  className={`w-full py-3.5 rounded-xl font-black text-sm transition-all shadow-md flex items-center justify-center gap-2 ${
+                    connectionRequest?.status === "pending"
+                      ? "bg-zinc-200 text-zinc-500 dark:bg-zinc-800"
+                      : "bg-[#5B4EE4] text-white hover:bg-[#4b40ce] active:scale-95"
+                  }`}
+                >
+                  {connectionRequest?.status === "pending" ? (
+                    <Loader2 size={20} className="animate-spin" />
+                  ) : (
+                    <Lock size={20} />
+                  )}
+                  {connectionRequest?.status === "pending"
+                    ? "Request Pending..."
+                    : "Request to Connect"}
+                </button>
+              ) : (
+                <button
+                  onClick={handleConnectClick}
+                  disabled={isConnecting}
+                  className="w-full bg-[#25D366] hover:bg-[#20b858] text-white py-3.5 rounded-xl font-black text-sm transition-all shadow-[0_4px_14px_0_rgba(37,211,102,0.39)] flex items-center justify-center gap-2 active:scale-95 disabled:opacity-70"
+                >
+                  {isConnecting ? (
+                    <Loader2 size={20} className="animate-spin" />
+                  ) : (
+                    <WhatsAppIcon size={20} />
+                  )}{" "}
+                  Connect on WhatsApp
+                </button>
+              )}
+            </div>
             <hr className="lg:hidden border-cardBorder" />
 
-            {/* Rules & Utilities Block */}
+            {/* 7. Rules & Utilities Block */}
             <div className="bg-surface p-5 sm:p-6 rounded-2xl border border-cardBorder shadow-sm">
               <h2 className="text-sm font-black text-primaryText mb-4 uppercase tracking-wider flex items-center gap-2">
                 <ShieldAlert size={18} className="text-indigo-500" /> Rules &
@@ -1051,91 +1350,23 @@ export default function PublicAccommodationView() {
               </div>
             </div>
 
-            {/* Amenities Matrix */}
-            <div className="flex flex-col gap-4 mt-2">
+            <hr className="border-cardBorder" />
+
+            {/* 8. Description */}
+            <div className="flex flex-col gap-3">
               <h2 className="text-lg font-black text-primaryText">
-                What this place offers
+                About this property
               </h2>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-y-5 gap-x-4">
-                {amenities.length > 0 ? (
-                  amenities.map((am, idx) => (
-                    <div
-                      key={idx}
-                      className="flex items-center gap-3 text-sm font-bold text-primaryText"
-                    >
-                      <div className="p-2 bg-surface border border-cardBorder rounded-lg text-secondaryText shadow-sm">
-                        {getAmenityIcon(am.iconKey)}
-                      </div>
-                      <span className="truncate pr-2">{am.name}</span>
-                    </div>
-                  ))
-                ) : (
-                  <span className="text-sm text-secondaryText italic col-span-3">
-                    No amenities listed by owner.
-                  </span>
-                )}
-              </div>
+              <p className="text-sm font-medium text-secondaryText leading-relaxed whitespace-pre-wrap">
+                {listing.description}
+              </p>
             </div>
 
-            {/* Highlights & Landmarks */}
-            {(tags.length > 0 || landmarks.length > 0) && (
-              <>
-                <hr className="border-cardBorder mt-2" />
-                <div className="flex flex-col gap-6">
-                  {tags.length > 0 && (
-                    <div className="flex flex-col gap-3">
-                      <h2 className="text-lg font-black text-primaryText">
-                        Property Highlights
-                      </h2>
-                      <div className="flex flex-wrap gap-2">
-                        {tags.map((tag, i) => (
-                          <span
-                            key={i}
-                            className="bg-[#5B4EE4]/10 text-[#5B4EE4] border border-[#5B4EE4]/20 px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-wider shadow-sm"
-                          >
-                            {tag.tag_name}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {landmarks.length > 0 && (
-                    <div className="flex flex-col gap-4 mt-2">
-                      <h2 className="text-lg font-black text-primaryText">
-                        Proximity & Landmarks
-                      </h2>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        {landmarks.map((lm) => (
-                          <div
-                            key={lm.id}
-                            className="flex items-center gap-4 bg-surface border border-cardBorder p-4 rounded-2xl shadow-sm hover:border-[#5B4EE4]/30 transition-colors"
-                          >
-                            <div className="w-10 h-10 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-100 flex items-center justify-center shrink-0">
-                              <Map size={18} />
-                            </div>
-                            <div className="flex flex-col min-w-0">
-                              <span className="text-sm font-black text-primaryText truncate">
-                                {lm.landmark_name}
-                              </span>
-                              <span className="text-xs font-bold text-secondaryText mt-0.5">
-                                {lm.walking_time_mins} mins walk •{" "}
-                                {lm.distance_meters}m
-                              </span>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </>
-            )}
+            <hr className="border-cardBorder" />
 
             {/* Linked Flatmates UI (Public Read-Only) */}
             {isFlatmate && linkedFlatmates.length > 0 && (
               <>
-                <hr className="border-cardBorder mt-2" />
                 <div className="bg-[#5B4EE4]/5 border border-[#5B4EE4]/20 p-5 sm:p-6 rounded-2xl flex flex-col gap-4">
                   <h2 className="text-sm font-black text-primaryText uppercase tracking-wider flex items-center gap-2">
                     <Users size={18} className="text-[#5B4EE4]" /> Meet Your
@@ -1169,11 +1400,11 @@ export default function PublicAccommodationView() {
                     ))}
                   </div>
                 </div>
+                <hr className="border-cardBorder mt-2" />
               </>
             )}
 
-            {/* Reviews Section */}
-            <hr className="border-cardBorder mt-2" />
+            {/* 9. Reviews Section */}
             <div className="flex flex-col gap-6">
               <div className="flex items-end justify-between">
                 <div className="flex flex-col gap-1">
@@ -1246,7 +1477,7 @@ export default function PublicAccommodationView() {
           </div>
 
           {/* ==================================================== */}
-          {/* RIGHT COLUMN: Sticky Pricing (Desktop Only)          */}
+          {/* RIGHT COLUMN: Sticky Desktop Pricing & Shield        */}
           {/* ==================================================== */}
           <div className="hidden lg:block lg:col-span-4 relative">
             <div className="sticky top-28 bg-surface border border-cardBorder rounded-3xl p-6 shadow-xl flex flex-col gap-6">
@@ -1273,6 +1504,17 @@ export default function PublicAccommodationView() {
               </div>
 
               <hr className="border-cardBorder" />
+
+              {/* MASKED CONTACT BLOCK */}
+              <div className="flex flex-col gap-2">
+                <span className="text-[10px] text-secondaryText uppercase font-bold tracking-wider">
+                  Host Contact
+                </span>
+                <p className="font-mono text-sm font-black text-primaryText">
+                  {displayPhone}{" "}
+                  <span className="text-tertiaryText mx-1">|</span> {displayWa}
+                </p>
+              </div>
 
               <div className="flex flex-col gap-3">
                 <div className="flex justify-between items-center text-sm font-bold">
@@ -1306,59 +1548,84 @@ export default function PublicAccommodationView() {
                 )}
               </div>
 
-              <button
-                onClick={handleConnectClick}
-                disabled={isConnecting}
-                className="w-full bg-[#25D366] hover:bg-[#20b858] text-white py-3.5 rounded-xl font-black text-sm transition-all shadow-[0_4px_14px_0_rgba(37,211,102,0.39)] flex items-center justify-center gap-2 disabled:opacity-70"
-              >
-                {isConnecting ? (
-                  <Loader2 size={20} className="animate-spin" />
-                ) : (
-                  <WhatsAppIcon size={20} />
-                )}{" "}
-                Connect on WhatsApp
-              </button>
+              {/* PRIVACY SHIELD DESKTOP BUTTONS */}
+              {isDoubleBlindLocked ? (
+                <button
+                  onClick={
+                    connectionRequest?.status === "pending"
+                      ? null
+                      : handleDoubleBlindClick
+                  }
+                  disabled={connectionRequest?.status === "pending"}
+                  className={`w-full py-3.5 rounded-xl font-black text-sm transition-all shadow-md flex items-center justify-center gap-2 ${
+                    connectionRequest?.status === "pending"
+                      ? "bg-zinc-200 text-zinc-500 dark:bg-zinc-800"
+                      : "bg-[#5B4EE4] text-white hover:bg-[#4b40ce] active:scale-95"
+                  }`}
+                >
+                  {connectionRequest?.status === "pending" ? (
+                    <Loader2 size={20} className="animate-spin" />
+                  ) : (
+                    <Lock size={20} />
+                  )}
+                  {connectionRequest?.status === "pending"
+                    ? "Request Pending..."
+                    : "Request to Connect"}
+                </button>
+              ) : (
+                <button
+                  onClick={handleConnectClick}
+                  disabled={isConnecting}
+                  className="w-full bg-[#25D366] hover:bg-[#20b858] text-white py-3.5 rounded-xl font-black text-sm transition-all shadow-[0_4px_14px_0_rgba(37,211,102,0.39)] flex items-center justify-center gap-2 active:scale-95 disabled:opacity-70"
+                >
+                  {isConnecting ? (
+                    <Loader2 size={20} className="animate-spin" />
+                  ) : (
+                    <WhatsAppIcon size={20} />
+                  )}{" "}
+                  Connect on WhatsApp
+                </button>
+              )}
 
-              <div className="p-4 bg-[#5B4EE4]/5 border border-[#5B4EE4]/20 rounded-xl flex gap-3 items-start shadow-sm">
-                <ShieldCheck
-                  size={18}
-                  className="text-[#5B4EE4] shrink-0 mt-0.5"
-                />
-                <p className="text-[10px] font-bold text-secondaryText leading-relaxed">
-                  <span className="text-[#5B4EE4]">Privacy Protected.</span> We
-                  don't expose exact locations or owner numbers publicly.
-                  Connecting routes you securely to the verified owner.
-                </p>
+              {/* Dynamic Info Alert */}
+              <div
+                className={`p-4 border rounded-xl flex gap-3 items-start shadow-sm ${
+                  isDoubleBlindLocked
+                    ? "bg-[#5B4EE4]/5 border-[#5B4EE4]/20"
+                    : "bg-emerald-500/5 border-emerald-500/20"
+                }`}
+              >
+                {isDoubleBlindLocked ? (
+                  <>
+                    <ShieldCheck
+                      size={18}
+                      className="text-[#5B4EE4] shrink-0 mt-0.5"
+                    />
+                    <p className="text-[10px] font-bold text-secondaryText leading-relaxed">
+                      <span className="text-[#5B4EE4]">Privacy Protected.</span>{" "}
+                      Contact numbers are masked for security. Send a connection
+                      request to unlock the host's details.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <Unlock
+                      size={18}
+                      className="text-emerald-500 shrink-0 mt-0.5"
+                    />
+                    <p className="text-[10px] font-bold text-secondaryText leading-relaxed">
+                      <span className="text-emerald-500">
+                        Contact Unlocked.
+                      </span>{" "}
+                      The host has accepted your request or this is an open
+                      listing. Feel free to connect directly.
+                    </p>
+                  </>
+                )}
               </div>
             </div>
           </div>
         </div>
-      </div>
-
-      {/* ==================================================== */}
-      {/* FLOATING BOTTOM CTA (Mobile Only)                    */}
-      {/* ==================================================== */}
-      <div className="lg:hidden fixed bottom-0 left-0 w-full bg-surface/95 backdrop-blur-xl border-t border-cardBorder p-3.5 shadow-[0_-10px_40px_rgba(0,0,0,0.1)] flex items-center justify-between z-50">
-        <div className="flex flex-col min-w-0 pr-4">
-          <span className="text-[9px] font-extrabold text-secondaryText uppercase tracking-widest mb-0.5">
-            {isPg ? "Rent Starts From" : "Monthly Rent"}
-          </span>
-          <span className="text-lg font-extrabold text-primaryText leading-none truncate">
-            {formatRent(listing.price_monthly_min, listing.price_monthly_max)}
-          </span>
-        </div>
-        <button
-          onClick={handleConnectClick}
-          disabled={isConnecting}
-          className="bg-[#25D366] active:scale-95 text-white px-5 py-3 rounded-xl font-black text-xs transition-all shadow-md flex items-center justify-center gap-2 disabled:opacity-70 shrink-0"
-        >
-          {isConnecting ? (
-            <Loader2 size={16} className="animate-spin" />
-          ) : (
-            <WhatsAppIcon size={16} />
-          )}{" "}
-          Connect
-        </button>
       </div>
     </div>
   );

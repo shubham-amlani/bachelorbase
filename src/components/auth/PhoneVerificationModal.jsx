@@ -3,14 +3,15 @@ import { supabase } from "../../lib/supabase";
 import { X, Phone, Loader2, ShieldCheck, CheckCircle2 } from "lucide-react";
 
 export default function PhoneVerificationModal({ isOpen, onClose, onSuccess }) {
+  // Hardcoded to step 1 since we are bypassing OTP
   const [step, setStep] = useState(1);
   const [phone, setPhone] = useState("");
-  const [otp, setOtp] = useState("");
+  // const [otp, setOtp] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
   const inputRef = useRef(null);
-  const OTP_LENGTH = 6;
+  // const OTP_LENGTH = 6;
 
   useEffect(() => {
     if (isOpen && step === 2) {
@@ -20,8 +21,9 @@ export default function PhoneVerificationModal({ isOpen, onClose, onSuccess }) {
 
   if (!isOpen) return null;
 
-  // 1. Ask Edge Function to generate and send OTP
-  const handleSendOTP = async (e) => {
+  // --- NEW: BYPASS OTP LOGIC ---
+  // Simply save the phone number to the user profile and mark as verified
+  const handleSavePhone = async (e) => {
     e.preventDefault();
     setError(null);
     if (phone.length < 10) {
@@ -30,9 +32,30 @@ export default function PhoneVerificationModal({ isOpen, onClose, onSuccess }) {
     }
 
     setLoading(true);
-    const formattedPhone = phone.startsWith("+") ? phone : `+91${phone}`;
+    const formattedPhone = phone.startsWith("+") ? phone : `${phone}`;
 
     try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session) throw new Error("User session not found.");
+
+      const { error: dbError } = await supabase
+        .from("users")
+        .update({
+          phone_number: formattedPhone,
+          is_phone_verified: true,
+        })
+        .eq("id", session.user.id);
+
+      if (dbError) throw dbError;
+
+      onSuccess(); // Close modal and execute the original blocked action
+
+      /* 
+      // ==========================================
+      // RESTORE THIS BLOCK TO RE-ENABLE TWILIO OTP
+      // ==========================================
       const { data, error: invokeErr } = await supabase.functions.invoke(
         "whatsapp-otp",
         {
@@ -41,12 +64,12 @@ export default function PhoneVerificationModal({ isOpen, onClose, onSuccess }) {
       );
 
       if (invokeErr || data?.error) {
-        throw new Error(
-          data?.error || invokeErr?.message || "Failed to send code"
-        );
+        throw new Error(data?.error || invokeErr?.message || "Failed to send code");
       }
 
       setStep(2);
+      // ==========================================
+      */
     } catch (err) {
       setError(err.message);
     } finally {
@@ -54,7 +77,10 @@ export default function PhoneVerificationModal({ isOpen, onClose, onSuccess }) {
     }
   };
 
-  // 2. Ask Edge Function to verify OTP and update database
+  /* 
+  // ==========================================
+  // RESTORE THIS BLOCK TO RE-ENABLE TWILIO OTP
+  // ==========================================
   const handleVerifyOTP = async (e) => {
     e.preventDefault();
     setError(null);
@@ -64,10 +90,7 @@ export default function PhoneVerificationModal({ isOpen, onClose, onSuccess }) {
     const formattedPhone = phone.startsWith("+") ? phone : `+91${phone}`;
 
     try {
-      // Get the currently logged-in user session ID
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
+      const { data: { session } } = await supabase.auth.getSession();
       if (!session) throw new Error("User session not found.");
 
       const { data, error: invokeErr } = await supabase.functions.invoke(
@@ -88,13 +111,15 @@ export default function PhoneVerificationModal({ isOpen, onClose, onSuccess }) {
         );
       }
 
-      onSuccess(); // Close modal and execute the main action
+      onSuccess(); 
     } catch (err) {
       setError(err.message);
     } finally {
       setLoading(false);
     }
   };
+  // ==========================================
+  */
 
   return (
     <div className="fixed inset-0 z-[999] flex items-center justify-center p-4">
@@ -123,12 +148,12 @@ export default function PhoneVerificationModal({ isOpen, onClose, onSuccess }) {
           </div>
 
           <h2 className="text-2xl font-bold text-[#1d1d1f] dark:text-white tracking-tight mb-2">
-            {step === 1 ? "Protect your account" : "Enter secure code"}
+            {step === 1 ? "Complete your profile" : "Enter secure code"}
           </h2>
           <p className="text-[15px] font-medium text-[#86868b] leading-relaxed mb-8">
             {step === 1
-              ? "To connect with property owners safely, we need to verify your phone number."
-              : `We sent a ${OTP_LENGTH}-digit verification code to ${phone}`}
+              ? "To connect with property owners safely, please provide your WhatsApp number."
+              : `We sent a code to ${phone}`}
           </p>
 
           {error && (
@@ -137,9 +162,9 @@ export default function PhoneVerificationModal({ isOpen, onClose, onSuccess }) {
             </div>
           )}
 
-          {step === 1 ? (
+          {step === 1 && (
             <form
-              onSubmit={handleSendOTP}
+              onSubmit={handleSavePhone}
               className="w-full flex flex-col gap-4"
             >
               <div className="flex items-center bg-white dark:bg-black/20 border-2 border-gray-200 dark:border-white/10 rounded-2xl px-4 py-4 focus-within:border-[#5B4EE4] dark:focus-within:border-[#5B4EE4] transition-colors shadow-sm">
@@ -167,11 +192,17 @@ export default function PhoneVerificationModal({ isOpen, onClose, onSuccess }) {
                 {loading ? (
                   <Loader2 size={18} className="animate-spin" />
                 ) : (
-                  "Send Verification Code"
+                  "Save & Continue"
                 )}
               </button>
             </form>
-          ) : (
+          )}
+
+          {/* 
+          // ==========================================
+          // RESTORE THIS BLOCK TO RE-ENABLE TWILIO OTP
+          // ==========================================
+          {step === 2 && (
             <form
               onSubmit={handleVerifyOTP}
               className="w-full flex flex-col gap-8"
@@ -227,6 +258,8 @@ export default function PhoneVerificationModal({ isOpen, onClose, onSuccess }) {
               </button>
             </form>
           )}
+          // ==========================================
+          */}
         </div>
       </div>
     </div>
